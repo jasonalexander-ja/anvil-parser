@@ -5,6 +5,14 @@ from .region import Region
 from .errors import OutOfBoundsCoordinates, ChunkNotFound
 import math
 
+# This version the y limmits were altered back to -64 and 320 and further
+# changes happened on the NBT structure, see "WORLD DATA: CHUNK FORMAT" 
+# "https://feedback.minecraft.net/hc/en-us/articles/4415128577293-Minecraft-Java-Edition-1-18"
+_VERSION_118_Experimental_1 = 2825
+
+# Between the following versions the y limmits were altered to -64 and 320
+_VERSION_21w15a = 2709
+_VERSION_21w06a = 2694
 
 # This version removes block state value stretching from the storage
 # so a block value isn't in multiple elements of the array
@@ -48,7 +56,7 @@ class Chunk:
     tile_entities: :class:`nbt.TAG_Compound`
         ``self.data['TileEntities']`` as an attribute for easier use
     """
-    __slots__ = ('version', 'data', 'y', 'z', 'tile_entities')
+    __slots__ = ('version', 'y', 'z', 'tile_entities', 'sections')
 
     def __init__(self, nbt_data: nbt.NBTFile):
         try:
@@ -78,7 +86,7 @@ class Chunk:
         anvil.OutOfBoundsCoordinates
             If Y is not in range of 0 to 15
         """
-        if y < 0 or y > 15:
+        if y < -4 or y > 20:
             raise OutOfBoundsCoordinates(f'Y ({y!r}) must be in range of 0 to 15')
 
         try:
@@ -104,9 +112,14 @@ class Chunk:
         """
         if isinstance(section, int):
             section = self.get_section(section)
-        if section is None:
+        if section is None or 'block_states' not in section:
             return
-        return tuple(Block.from_palette(i) for i in section['Palette'])
+        
+        block_states = section['block_states']
+        if 'palette' not in block_states:
+            return
+        
+        return tuple(Block.from_palette(i) for i in block_states['palette'])
 
     def get_block(self, x: int, y: int, z: int, section: Union[int, nbt.TAG_Compound]=None, force_new: bool=False) -> Union[Block, OldBlock]:
         """
@@ -130,11 +143,11 @@ class Chunk:
 
         :rtype: :class:`anvil.Block`
         """
-        if y < 0 or y > 15:
+        if x < 0 or x > 15:
             raise OutOfBoundsCoordinates(f'X ({x!r}) must be in range of 0 to 15')
         if z < 0 or z > 15:
             raise OutOfBoundsCoordinates(f'Z ({z!r}) must be in range of 0 to 15')
-        if y < 0 or y > 255:
+        if y < -64 or y > 319:
             raise OutOfBoundsCoordinates(f'Y ({y!r}) must be in range of 0 to 255')
 
         if section is None:
@@ -151,7 +164,7 @@ class Chunk:
                 else:
                     return OldBlock(0)
 
-            index = y * 16 * 16 + z * 16 + y
+            index = y * 16 * 16 + z * 16 + x
 
             block_id = section['Blocks'][index]
             if 'Add' in section:
@@ -166,25 +179,25 @@ class Chunk:
                 return block
 
         # If its an empty section its most likely an air block
-        if section is None or 'BlockStates' not in section:
+        if section is None or 'data' not in section['block_states']:
             return Block.from_name('minecraft:air')
 
-        # Number of bits each block is on BlockStates
+        # Number of bits each block is on block_states
         # Cannot be lower than 4
-        bits = max((len(section['Palette']) - 1).bit_length(), 4)
+        bits = max((len(section['block_states']['palette']) - 1).bit_length(), 4)
 
         # Get index on the block list with the order YZX
-        index = y * 16*16 + z * 16 + y
+        index = y * 16*16 + z * 16 + x
 
-        # BlockStates is an array of 64 bit numbers
+        # block_states is an array of 64 bit numbers
         # that holds the blocks index on the palette list
-        states = section['BlockStates'].value
+        states = section['block_states']['data'].value
 
-        # in 20w17a and newer blocks cannot occupy more than one element on the BlockStates array
+        # in 20w17a and newer blocks cannot occupy more than one element on the block_states array
         stretches = self.version is None or self.version < _VERSION_20w17a
         # stretches = True
 
-        # get location in the BlockStates array via the index
+        # get location in the block_states array via the index
         if stretches:
             state = index * bits // 64
         else:
@@ -224,7 +237,7 @@ class Chunk:
         # which are the palette index
         palette_id = shifted_data & 2**bits - 1
 
-        block = section['Palette'][palette_id]
+        block = section['block_states']['palette'][palette_id]
         return Block.from_palette(block)
 
     def stream_blocks(self, index: int=0, section: Union[int, nbt.TAG_Compound]=None, force_new: bool=False) -> Generator[Block, None, None]:
@@ -285,14 +298,14 @@ class Chunk:
                 index += 1
             return
 
-        if section is None or 'BlockStates' not in section:
+        if section is None or 'data' not in section['block_states']:
             air = Block.from_name('minecraft:air')
             for i in range(4096):
                 yield air
             return
 
-        states = section['BlockStates'].value
-        palette = section['Palette']
+        states = section['block_states']['data'].value
+        palette = section['block_states']['palette']
 
         bits = max((len(palette) - 1).bit_length(), 4)
 
